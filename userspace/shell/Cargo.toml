@@ -1,0 +1,12 @@
+[package]
+name = "shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libminux = { path = "../libminux" }
+
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+

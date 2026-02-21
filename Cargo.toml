@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "kernel",
+    "userspace/vga_driver", 
+    "userspace/vesa_driver",
+    "userspace/gfx_service",
+    "userspace/input_service",
+    "userspace/console_service",
+    "userspace/elf_loader",
+    "userspace/vfs",
+    "userspace/ramfs",
+    "userspace/x11_server",
+    "userspace/x11_demo",
+    "userspace/init",
+    "userspace/shell",
+    "userspace/snake",
+]
+
+[workspace.dependencies]
+# Common dependencies for userspace programs
+minux-syscalls = { path = "userspace/libminux" }
+
+[package]
+name = "minux"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+x86_64 = "0.14"
+pic8259 = "0.10"
+pc-keyboard = "0.7"
+spin = "0.9"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+debug = true
+lto = false
+codegen-units = 16
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "minux"
+path = "kernel/src/main.rs"
+test = false
+bench = false
+
+# Build script to compile userspace programs
+[build-dependencies]
