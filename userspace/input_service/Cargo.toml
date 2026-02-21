@@ -1,0 +1,11 @@
+[package]
+name = "input_service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libminux = { path = "../libminux" }
+
+[[bin]]
+name = "input_service"
+path = "src/main.rs"

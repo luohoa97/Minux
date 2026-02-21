@@ -1,0 +1,11 @@
+[package]
+name = "x11_server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "x11_server"
+path = "src/main.rs"
+
+[dependencies]
+libminux = { path = "../libminux" }
