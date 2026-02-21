@@ -2,6 +2,7 @@
 
 mod cpu;
 mod pic;
+mod gdt;
 mod idt;
 mod exceptions;
 mod interrupts;
@@ -21,6 +22,7 @@ const ENABLE_HW_INTERRUPTS: bool = true;
 /// Initialize x86_64 architecture
 pub fn init() {
     fpu::init();
+    gdt::init();
     smp::init();
     interrupts::init();
 }
