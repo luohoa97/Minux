@@ -1,0 +1,10 @@
+[package]
+name = "libminux"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+# No std library for userspace programs
+[dependencies]

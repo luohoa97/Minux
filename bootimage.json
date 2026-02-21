@@ -1,0 +1,11 @@
+{
+    "run-command": [
+        "qemu-system-x86_64",
+        "-drive",
+        "format=raw,file={image}",
+        "-chardev",
+        "stdio,id=serial0,signal=off",
+        "-serial",
+        "chardev:serial0"
+    ]
+}

@@ -1,0 +1,11 @@
+[package]
+name = "vesa_driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libminux = { path = "../libminux" }
+
+[[bin]]
+name = "vesa_driver"
+path = "src/main.rs"

@@ -1,0 +1,88 @@
+#!/bin/bash
+set -e
+
+echo "Building Minux..."
+
+# Build kernel with multiboot header
+cargo build --package minux
+
+# Build userspace
+cargo build --package vga_driver --release
+cargo build --package init --release
+
+# Create ISO structure
+mkdir -p isodir/boot/grub isodir/boot/modules
+
+# Copy binaries
+cp target/x86_64-minux/debug/minux isodir/boot/kernel.bin
+cp target/x86_64-minux/release/vga_driver isodir/boot/modules/
+cp target/x86_64-minux/release/init isodir/boot/modules/
+
+# GRUB config (supports both BIOS and EFI)
+cat > isodir/boot/grub/grub.cfg << 'EOF'
+set timeout=3
+set default=0
+
+menuentry "Minux L4 Microkernel" {
+    echo "Loading Minux..."
+    multiboot2 /boot/kernel.bin
+    echo "Loading modules..."
+    module2 /boot/modules/vga_driver vga_driver
+    module2 /boot/modules/init init
+    echo "Booting..."
+    boot
+}
+EOF
+
+# Check for GRUB modules
+if [ ! -d /usr/lib/grub/i386-pc ] && [ ! -d /usr/lib/grub2/i386-pc ]; then
+    echo "Error: GRUB BIOS modules not found!"
+    echo "Install with: sudo dnf install grub2-pc grub2-pc-modules"
+    exit 1
+fi
+
+# Create bootable ISO with GRUB
+echo "Creating ISO with grub2-mkrescue..."
+if grub2-mkrescue -o minux.iso isodir 2>&1 | tee grub.log; then
+    echo "ISO created successfully with grub2-mkrescue"
+else
+    echo "grub2-mkrescue failed, trying manual method..."
+    echo "Installing GRUB manually..."
+    mkdir -p isodir/boot/grub/i386-pc
+    
+    # Find GRUB files
+    if [ -d /usr/lib/grub/i386-pc ]; then
+        cp -r /usr/lib/grub/i386-pc/* isodir/boot/grub/i386-pc/
+    elif [ -d /usr/share/grub2/i386-pc ]; then
+        cp -r /usr/share/grub2/i386-pc/* isodir/boot/grub/i386-pc/
+    fi
+    
+    # Create boot image
+    grub2-mkimage -o isodir/boot/grub/i386-pc/eltorito.img -O i386-pc-eltorito \
+        biosdisk iso9660 multiboot2
+    
+    # Create ISO
+    xorriso -as mkisofs \
+        -b boot/grub/i386-pc/eltorito.img \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
+        -o minux.iso \
+        isodir
+fi
+
+echo "Checking kernel binary..."
+ls -lh target/x86_64-minux/debug/minux
+echo ""
+echo "Checking for multiboot2 header in first 32KB..."
+hexdump -C target/x86_64-minux/debug/minux | head -100 | grep "d6 50 52 e8" && echo "Found!" || echo "NOT FOUND in first 32KB!"
+echo ""
+echo "Checking all sections..."
+readelf -S target/x86_64-minux/debug/minux | grep -E "multiboot|boot"
+echo ""
+echo "Checking ISO..."
+ls -lh minux.iso
+
+# Run
+echo "Booting Minux..."
+qemu-system-x86_64 -boot d -cdrom minux.iso -serial stdio
