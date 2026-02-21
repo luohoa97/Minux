@@ -1,0 +1,11 @@
+[package]
+name = "console_service"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "console_service"
+path = "src/main.rs"
+
+[dependencies]
+libminux = { path = "../libminux" }
