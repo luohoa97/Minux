@@ -40,6 +40,29 @@ pub struct ModuleTag {
     // Followed by null-terminated string (module name)
 }
 
+/// Multiboot2 framebuffer tag (type 8).
+#[repr(C)]
+pub struct FramebufferTag {
+    pub tag_type: u32,
+    pub size: u32,
+    pub framebuffer_addr: u64,
+    pub framebuffer_pitch: u32,
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    pub framebuffer_bpp: u8,
+    pub framebuffer_type: u8,
+    pub reserved: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FramebufferInfo {
+    pub phys_addr: u64,
+    pub pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u8,
+}
+
 /// Boot module information
 #[derive(Debug, Clone, Copy)]
 pub struct BootModule {
@@ -124,6 +147,15 @@ impl Tag {
             None
         }
     }
+
+    /// Check if this is a framebuffer tag.
+    pub fn as_framebuffer(&self) -> Option<&FramebufferTag> {
+        if self.tag_type == TagType::Framebuffer as u32 {
+            Some(unsafe { &*(self as *const Tag as *const FramebufferTag) })
+        } else {
+            None
+        }
+    }
 }
 
 impl ModuleTag {
@@ -185,4 +217,20 @@ pub fn get_boot_modules(multiboot_addr: usize) -> &'static [BootModule] {
     drop(modules);
 
     unsafe { core::slice::from_raw_parts(ptr, len) }
+}
+
+pub fn get_framebuffer_info(multiboot_addr: usize) -> Option<FramebufferInfo> {
+    let iter = parse_multiboot_info(multiboot_addr)?;
+    for tag in iter {
+        if let Some(fb) = tag.as_framebuffer() {
+            return Some(FramebufferInfo {
+                phys_addr: fb.framebuffer_addr,
+                pitch: fb.framebuffer_pitch,
+                width: fb.framebuffer_width,
+                height: fb.framebuffer_height,
+                bpp: fb.framebuffer_bpp,
+            });
+        }
+    }
+    None
 }

@@ -12,12 +12,14 @@ mod smp;
 mod lapic;
 mod fpu;
 pub mod boot;
+use spin::Mutex;
 
 pub use cpu::*;
-pub use boot::{BootModule, BootProtocol, detect_boot_protocol, get_boot_modules};
+pub use boot::{BootModule, BootProtocol, FramebufferInfo, detect_boot_protocol, get_boot_modules};
 // Bring-up mode: user tasks still run at CPL0 on task stacks, so hardware IRQ
 // entry can corrupt task control flow without a dedicated ring-transition stack.
 const ENABLE_HW_INTERRUPTS: bool = true;
+static BOOT_FRAMEBUFFER: Mutex<Option<FramebufferInfo>> = Mutex::new(None);
 
 /// Initialize x86_64 architecture
 pub fn init() {
@@ -101,4 +103,12 @@ pub fn enter_task(entry: u64, stack: u64) -> ! {
             options(noreturn)
         );
     }
+}
+
+pub fn set_boot_framebuffer(info: Option<FramebufferInfo>) {
+    *BOOT_FRAMEBUFFER.lock() = info;
+}
+
+pub fn boot_framebuffer() -> Option<FramebufferInfo> {
+    *BOOT_FRAMEBUFFER.lock()
 }

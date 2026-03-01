@@ -7,11 +7,13 @@
 #![no_main]
 
 use libminux::{syscall, vga, MessageType, TaskId};
+const INIT_TASK_ID: TaskId = 2;
 
 /// VGA driver state
 struct VgaDriver {
     cursor_x: usize,
     cursor_y: usize,
+    line_len: [u16; vga::VGA_HEIGHT],
 }
 
 impl VgaDriver {
@@ -19,6 +21,7 @@ impl VgaDriver {
         Self {
             cursor_x: 0,
             cursor_y: 0,
+            line_len: [0; vga::VGA_HEIGHT],
         }
     }
     
@@ -35,6 +38,7 @@ impl VgaDriver {
         
         self.cursor_x = 0;
         self.cursor_y = 3; // Start below header
+        self.line_len = [0; vga::VGA_HEIGHT];
     }
     
     /// Handle incoming message
@@ -57,6 +61,7 @@ impl VgaDriver {
                     }
                     self.cursor_x = 0;
                     self.cursor_y = 0;
+                    self.line_len = [0; vga::VGA_HEIGHT];
                 }
             }
             _ => {
@@ -71,6 +76,9 @@ impl VgaDriver {
             for ch in text.bytes() {
                 match ch {
                     b'\n' => {
+                        if self.cursor_x > self.line_len[self.cursor_y] as usize {
+                            self.line_len[self.cursor_y] = self.cursor_x as u16;
+                        }
                         self.cursor_x = 0;
                         self.cursor_y += 1;
                         if self.cursor_y >= vga::VGA_HEIGHT {
@@ -80,8 +88,32 @@ impl VgaDriver {
                     b'\r' => {
                         self.cursor_x = 0;
                     }
+                    0x08 => {
+                        if self.cursor_x > 0 {
+                            self.cursor_x -= 1;
+                        } else if self.cursor_y > 0 {
+                            self.cursor_y -= 1;
+                            self.cursor_x = self.line_len[self.cursor_y] as usize;
+                            if self.cursor_x > 0 {
+                                self.cursor_x -= 1;
+                            }
+                        } else {
+                            continue;
+                        }
+                        vga::write_char(
+                            self.cursor_x,
+                            self.cursor_y,
+                            b' ',
+                            vga::Color::White,
+                            vga::Color::Black,
+                        );
+                        if self.cursor_x < self.line_len[self.cursor_y] as usize {
+                            self.line_len[self.cursor_y] = self.cursor_x as u16;
+                        }
+                    }
                     ch => {
                         if self.cursor_x >= vga::VGA_WIDTH {
+                            self.line_len[self.cursor_y] = vga::VGA_WIDTH as u16;
                             self.cursor_x = 0;
                             self.cursor_y += 1;
                             if self.cursor_y >= vga::VGA_HEIGHT {
@@ -98,6 +130,9 @@ impl VgaDriver {
                         );
                         
                         self.cursor_x += 1;
+                        if self.cursor_x > self.line_len[self.cursor_y] as usize {
+                            self.line_len[self.cursor_y] = self.cursor_x as u16;
+                        }
                     }
                 }
             }
@@ -126,6 +161,10 @@ impl VgaDriver {
                 vga::write_char(x, vga::VGA_HEIGHT - 1, b' ', vga::Color::White, vga::Color::Black);
             }
         }
+        for y in 1..vga::VGA_HEIGHT {
+            self.line_len[y - 1] = self.line_len[y];
+        }
+        self.line_len[vga::VGA_HEIGHT - 1] = 0;
         
         self.cursor_y = vga::VGA_HEIGHT - 1;
     }
@@ -136,22 +175,21 @@ impl VgaDriver {
 pub extern "C" fn _start() -> ! {
     let mut driver = VgaDriver::new();
     driver.init();
+    let _ = syscall::send_message(
+        INIT_TASK_ID,
+        MessageType::Request,
+        b"register:display:vga_driver",
+    );
     
     // Main driver loop - wait for messages
     loop {
-        match syscall::receive_message_zc() {
-            Ok((sender, msg_type, ptr, len)) => {
-                let data = if !ptr.is_null() && len > 0 {
-                    unsafe { core::slice::from_raw_parts(ptr, len) }
-                } else {
-                    &[]
-                };
-                driver.handle_message(sender, msg_type, data);
+        let mut buf = [0u8; 256];
+        match syscall::receive_message(&mut buf) {
+            Ok((sender, msg_type)) => {
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                driver.handle_message(sender, msg_type, &buf[..len]);
             }
-            Err(_) => {
-                // No message available, yield CPU
-                syscall::yield_cpu();
-            }
+            Err(_) => syscall::yield_cpu(),
         }
     }
 }

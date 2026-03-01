@@ -16,6 +16,7 @@ USER_PKGS=(
 )
 PAYLOAD_PKGS=(
     "ramfs"
+    "vga_driver"
     "vesa_driver"
     "gfx_service"
     "input_service"
@@ -24,6 +25,11 @@ PAYLOAD_PKGS=(
     "snake"
     "x11_server"
     "x11_demo"
+    "ls"
+    "cat"
+    "tree"
+    "proc_service"
+    "bootfs_service"
 )
 
 # Build kernel + all userspace payloads in one release invocation.
@@ -39,7 +45,8 @@ cargo "${COMMON_CARGO_FLAGS[@]}" build --release \
     --package "${PAYLOAD_PKGS[5]}" \
     --package "${PAYLOAD_PKGS[6]}" \
     --package "${PAYLOAD_PKGS[7]}" \
-    --package "${PAYLOAD_PKGS[8]}"
+    --package "${PAYLOAD_PKGS[8]}" \
+    --package "${PAYLOAD_PKGS[9]}"
 
 # Create ISO structure
 mkdir -p isodir/boot/grub isodir/boot/modules
@@ -59,6 +66,7 @@ root = Path("target/x86_64-minux/release")
 out = Path("isodir/boot/modules/bootfs")
 pkgs = [
     "ramfs",
+    "vga_driver",
     "vesa_driver",
     "gfx_service",
     "input_service",
@@ -67,6 +75,11 @@ pkgs = [
     "snake",
     "x11_server",
     "x11_demo",
+    "ls",
+    "cat",
+    "tree",
+    "proc_service",
+    "bootfs_service",
 ]
 
 blob = bytearray(b"MINUXFS1")
@@ -84,6 +97,9 @@ PY
 cat > isodir/boot/grub/grub.cfg << 'EOF_GRUB'
 set timeout=3
 set default=0
+set gfxmode=1024x768x32,auto
+set gfxpayload=keep
+terminal_output gfxterm
 
 menuentry "Minux L4 Microkernel" {
     echo "Loading Minux..."

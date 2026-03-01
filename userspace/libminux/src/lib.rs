@@ -26,6 +26,19 @@ pub enum Syscall {
     ReceiveFast = 12,
     ExecModule = 13,
     ReadScancode = 14,
+    GetFramebufferInfo = 15,
+    GetTaskInfo = 16,
+    BootfsList = 17,
+    BootfsRead = 18,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FramebufferInfo {
+    pub phys_addr: u64,
+    pub pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u8,
 }
 
 /// Message types
@@ -316,6 +329,95 @@ pub mod syscall {
             None
         } else {
             Some((result & 0xff) as u8)
+        }
+    }
+
+    pub fn get_framebuffer_info() -> Option<FramebufferInfo> {
+        let mut phys = 0u64;
+        let mut pitch = 0u64;
+        let mut width = 0u64;
+        let mut height = 0u64;
+        let mut bpp = 0u64;
+        let result = unsafe {
+            syscall6(
+                Syscall::GetFramebufferInfo,
+                (&mut phys as *mut u64) as u64,
+                (&mut pitch as *mut u64) as u64,
+                (&mut width as *mut u64) as u64,
+                (&mut height as *mut u64) as u64,
+                (&mut bpp as *mut u64) as u64,
+                0,
+            )
+        };
+        if result == u64::MAX {
+            None
+        } else {
+            Some(FramebufferInfo {
+                phys_addr: phys,
+                pitch: pitch as u32,
+                width: width as u32,
+                height: height as u32,
+                bpp: bpp as u8,
+            })
+        }
+    }
+
+    pub fn get_task_info(task_id: TaskId) -> Option<(u32, u64)> {
+        let mut state: u32 = 0;
+        let mut exit_code: u64 = 0;
+        let result = unsafe {
+            syscall6(
+                Syscall::GetTaskInfo,
+                task_id as u64,
+                (&mut state as *mut u32) as u64,
+                (&mut exit_code as *mut u64) as u64,
+                0,
+                0,
+                0,
+            )
+        };
+        if result == u64::MAX {
+            None
+        } else {
+            Some((state, exit_code))
+        }
+    }
+
+    pub fn bootfs_list(out: &mut [u8]) -> Option<usize> {
+        let result = unsafe {
+            syscall6(
+                Syscall::BootfsList,
+                out.as_mut_ptr() as u64,
+                out.len() as u64,
+                0,
+                0,
+                0,
+                0,
+            )
+        };
+        if result == u64::MAX {
+            None
+        } else {
+            Some(result as usize)
+        }
+    }
+
+    pub fn bootfs_read(name: &[u8], out: &mut [u8]) -> Option<usize> {
+        let result = unsafe {
+            syscall6(
+                Syscall::BootfsRead,
+                name.as_ptr() as u64,
+                name.len() as u64,
+                out.as_mut_ptr() as u64,
+                out.len() as u64,
+                0,
+                0,
+            )
+        };
+        if result == u64::MAX {
+            None
+        } else {
+            Some(result as usize)
         }
     }
 }

@@ -43,7 +43,9 @@ USER_PKGS=(
 )
 PAYLOAD_PKGS=(
     "ramfs"
+    "bootfs_service"
     "vfs"
+    "vga_driver"
     "vesa_driver"
     "gfx_service"
     "input_service"
@@ -52,6 +54,10 @@ PAYLOAD_PKGS=(
     "snake"
     "x11_server"
     "x11_demo"
+    "proc_service"
+    "ls"
+    "cat"
+    "tree"
 )
 
 # Build kernel (dev) and all userspace payloads (release) in two cargo invocations.
@@ -73,7 +79,13 @@ time cargo "${COMMON_CARGO_FLAGS[@]}" build --release --target x86_64-minux.json
     --package "${PAYLOAD_PKGS[6]}" \
     --package "${PAYLOAD_PKGS[7]}" \
     --package "${PAYLOAD_PKGS[8]}" \
-    --package "${PAYLOAD_PKGS[9]}"
+    --package "${PAYLOAD_PKGS[9]}" \
+    --package "${PAYLOAD_PKGS[10]}" \
+    --package "${PAYLOAD_PKGS[11]}" \
+    --package "${PAYLOAD_PKGS[12]}" \
+    --package "${PAYLOAD_PKGS[13]}" \
+    --package "${PAYLOAD_PKGS[14]}" \
+    --package "${PAYLOAD_PKGS[15]}"
 step "Build userspace (release): done"
 
 step "Create ISO layout"
@@ -94,7 +106,9 @@ root = Path("target/x86_64-minux/release")
 out = Path("isodir/boot/modules/bootfs")
 bin_pkgs = [
     "ramfs",
+    "bootfs_service",
     "vfs",
+    "vga_driver",
     "vesa_driver",
     "gfx_service",
     "input_service",
@@ -103,6 +117,10 @@ bin_pkgs = [
     "snake",
     "x11_server",
     "x11_demo",
+    "proc_service",
+    "ls",
+    "cat",
+    "tree",
 ]
 extra_files = [
     ("usr/share/kbd/consolefonts/ter-u16n.bdf", Path("userspace/assets/fonts/ter-u16n.bdf")),
@@ -130,6 +148,9 @@ step "Write GRUB config"
 cat > isodir/boot/grub/grub.cfg << 'EOF_GRUB'
 set timeout=3
 set default=0
+set gfxmode=1024x768x32,auto
+set gfxpayload=keep
+terminal_output gfxterm
 
 menuentry "Minux L4 Microkernel" {
     echo "Loading Minux..."

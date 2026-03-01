@@ -116,6 +116,13 @@ pub fn block_current_task() {
 /// Unblock task (IPC message received)
 pub fn unblock_task(task_id: TaskId) {
     let _ = set_task_state(task_id, TaskState::Ready);
+    // Cross-core wakeup: if the task last ran on another CPU, send a reschedule IPI.
+    let here = crate::microkernel::current_cpu_index();
+    if let Some(owner_cpu) = super::task::task_last_cpu(task_id) {
+        if owner_cpu != here {
+            crate::arch::send_reschedule_ipi(owner_cpu as u32);
+        }
+    }
 }
 
 /// Perform context switch between tasks

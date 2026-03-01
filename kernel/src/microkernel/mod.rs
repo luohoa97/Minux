@@ -24,7 +24,36 @@ pub use sched::schedule;
 const MAX_BOOT_MODULES: usize = 32;
 static BOOT_MODULES: Mutex<([Option<crate::arch::x86_64::BootModule>; MAX_BOOT_MODULES], usize)> =
     Mutex::new(([None; MAX_BOOT_MODULES], 0));
-const BOOTFS_MAGIC: &[u8; 8] = b"MINUXFS1";
+pub const BOOTFS_MAGIC: &[u8; 8] = b"MINUXFS1";
+
+pub fn bootfs_image() -> Option<&'static [u8]> {
+    let store = BOOT_MODULES.lock();
+    let (arr, n) = &*store;
+    let bootfs = arr
+        .iter()
+        .take(*n)
+        .flatten()
+        .find(|m| {
+            if m.end <= m.start {
+                return false;
+            }
+            let image = unsafe {
+                core::slice::from_raw_parts(
+                    m.start as *const u8,
+                    core::cmp::min(m.end - m.start, BOOTFS_MAGIC.len()),
+                )
+            };
+            image.len() == BOOTFS_MAGIC.len() && image == BOOTFS_MAGIC
+        })?;
+    if bootfs.end <= bootfs.start {
+        return None;
+    }
+    let image = unsafe { core::slice::from_raw_parts(bootfs.start as *const u8, bootfs.end - bootfs.start) };
+    if image.len() < BOOTFS_MAGIC.len() || &image[..BOOTFS_MAGIC.len()] != BOOTFS_MAGIC {
+        return None;
+    }
+    Some(image)
+}
 
 /// Initialize the microkernel
 pub fn init() {
@@ -59,6 +88,20 @@ pub fn load_boot_modules(boot_info: usize) {
     // Detect boot protocol
     let protocol = crate::arch::detect_boot_protocol(boot_info);
     crate::serial_println!("[KERNEL] Boot protocol: {:?}", protocol);
+    let fb = crate::arch::x86_64::boot::get_boot_framebuffer(boot_info, protocol);
+    crate::arch::x86_64::set_boot_framebuffer(fb);
+    if let Some(fb) = fb {
+        crate::serial_println!(
+            "[KERNEL] Framebuffer: addr=0x{:x} {}x{} pitch={} bpp={}",
+            fb.phys_addr,
+            fb.width,
+            fb.height,
+            fb.pitch,
+            fb.bpp
+        );
+    } else {
+        crate::serial_println!("[KERNEL] Framebuffer: unavailable");
+    }
     
     let modules = crate::arch::get_boot_modules(boot_info, protocol);
     {

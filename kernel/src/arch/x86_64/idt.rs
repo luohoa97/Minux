@@ -36,7 +36,7 @@ static mut IDT_RAW: [IdtEntry; 256] = [IdtEntry::missing(); 256];
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const INTERRUPT_GATE_PRESENT: u8 = 0x8E;
-const DOUBLE_FAULT_IST: u8 = 1;
+const FAULT_IST: u8 = 1;
 
 unsafe fn set_gate(vector: usize, handler: u64, ist: u8) {
     let entry = IdtEntry {
@@ -58,9 +58,12 @@ pub fn init() {
     unsafe {
         set_gate(0, super::exceptions::divide_error_handler as usize as u64, 0);
         set_gate(6, super::exceptions::invalid_opcode_handler as usize as u64, 0);
-        set_gate(8, super::exceptions::double_fault_handler as usize as u64, DOUBLE_FAULT_IST);
-        set_gate(13, super::exceptions::general_protection_fault_handler as usize as u64, 0);
-        set_gate(14, super::exceptions::page_fault_handler as usize as u64, 0);
+        // During bring-up, user tasks still execute at CPL0. If a task stack is
+        // invalid, entering #GP/#PF on that same stack can escalate into #DF.
+        // Route critical faults through IST1 so handlers always get a known-good stack.
+        set_gate(8, super::exceptions::double_fault_handler as usize as u64, FAULT_IST);
+        set_gate(13, super::exceptions::general_protection_fault_handler as usize as u64, FAULT_IST);
+        set_gate(14, super::exceptions::page_fault_handler as usize as u64, FAULT_IST);
         set_gate(
             super::pic::InterruptIndex::Timer.as_usize(),
             super::timer::timer_handler as usize as u64,

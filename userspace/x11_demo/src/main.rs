@@ -61,20 +61,30 @@ pub extern "C" fn _start() -> ! {
 
 fn request(target: TaskId, msg: &[u8]) -> Option<[u8; 16]> {
     let _ = syscall::send_message(target, MessageType::Request, msg);
-    let mut reply = [0u8; 16];
-    if let Ok((_sender, MessageType::Reply)) = syscall::receive_message(&mut reply) {
-        Some(reply)
-    } else {
-        None
+    for _ in 0..256u32 {
+        let mut reply = [0u8; 16];
+        if let Ok((sender, msg_type)) = syscall::receive_message(&mut reply) {
+            if sender == target && matches!(msg_type, MessageType::Reply) {
+                return Some(reply);
+            }
+        }
+        syscall::yield_cpu();
     }
+    None
 }
 
 fn discover_service(query: &[u8]) -> Option<TaskId> {
     let _ = syscall::send_message(INIT_TASK_ID, MessageType::Request, query);
-    let mut reply = [0u8; 16];
-    if let Ok((_sender, MessageType::Reply)) = syscall::receive_message(&mut reply) {
-        let len = reply.iter().position(|&b| b == 0).unwrap_or(reply.len());
-        return parse_u32_ascii(&reply[..len]);
+    for _ in 0..256u32 {
+        let mut reply = [0u8; 16];
+        if let Ok((sender, msg_type)) = syscall::receive_message(&mut reply) {
+            if sender != INIT_TASK_ID || !matches!(msg_type, MessageType::Reply) {
+                continue;
+            }
+            let len = reply.iter().position(|&b| b == 0).unwrap_or(reply.len());
+            return parse_u32_ascii(&reply[..len]);
+        }
+        syscall::yield_cpu();
     }
     None
 }

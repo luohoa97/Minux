@@ -65,6 +65,9 @@ impl RamFs {
         let _ = self.write_file(b"/usr/bin/shell", b"shell");
         let _ = self.write_file(b"/usr/bin/sh", b"shell");
         let _ = self.write_file(b"/usr/bin/x11_demo", b"x11_demo");
+        let _ = self.write_file(b"/usr/bin/ls", b"ls");
+        let _ = self.write_file(b"/usr/bin/cat", b"cat");
+        let _ = self.write_file(b"/usr/bin/tree", b"tree");
         let _ = self.write_file(b"/usr/share/kbd/consolefonts/ter-u16n.bdf", b"usr/share/kbd/consolefonts/ter-u16n.bdf");
         let _ = self.write_file(b"/boot/modules/init", b"init");
         let _ = self.write_file(b"/boot/modules/elf_loader", b"elf_loader");

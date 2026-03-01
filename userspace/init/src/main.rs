@@ -99,13 +99,16 @@ fn supervision_loop() -> ! {
 }
 
 fn launch_policy(registry: &mut Registry) {
-    const PLAN: [(&str, Option<&[u8]>); 7] = [
+    const PLAN: [(&str, Option<&[u8]>); 10] = [
         ("ramfs", Some(b"ramfs")),
+        ("bootfs_service", Some(b"bootfs")),
         ("vfs", Some(b"fs")),
-        ("vesa_driver", Some(b"display")),
+        ("vga_driver", Some(b"display")),
+        ("vesa_driver", Some(b"display_vesa")),
         ("gfx_service", Some(b"gfx")),
         ("input_service", Some(b"input")),
         ("console_service", Some(b"tty")),
+        ("proc_service", Some(b"proc")),
         ("shell", None),
     ];
 

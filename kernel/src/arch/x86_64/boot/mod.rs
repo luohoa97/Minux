@@ -7,6 +7,7 @@ pub mod multiboot;
 pub mod efi;
 
 pub use multiboot::BootModule;
+pub use multiboot::FramebufferInfo;
 
 /// Get boot modules (works for both multiboot2 and EFI)
 pub fn get_boot_modules(boot_info: usize, protocol: BootProtocol) -> &'static [BootModule] {
@@ -24,6 +25,13 @@ pub fn get_boot_modules(boot_info: usize, protocol: BootProtocol) -> &'static [B
             crate::serial_println!("[BOOT] Unknown boot protocol");
             &[]
         }
+    }
+}
+
+pub fn get_boot_framebuffer(boot_info: usize, protocol: BootProtocol) -> Option<FramebufferInfo> {
+    match protocol {
+        BootProtocol::Multiboot2 => multiboot::get_framebuffer_info(boot_info),
+        BootProtocol::Efi | BootProtocol::Unknown => None,
     }
 }
 

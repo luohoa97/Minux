@@ -99,9 +99,22 @@ pub extern "C" fn _start() -> ! {
 }
 
 fn wait_mounts(vfs: &mut Vfs) {
+    let mut mounted_root = false;
+    let mut mounted_tmp = false;
     for _ in 0..5_000_000u32 {
-        if let Some(ramfs) = discover_service(b"lookup:ramfs") {
-            let _ = vfs.mount(b"/", ramfs);
+        if !mounted_root {
+            if let Some(bootfs) = discover_service(b"lookup:bootfs") {
+                let _ = vfs.mount(b"/", bootfs);
+                mounted_root = true;
+            }
+        }
+        if !mounted_tmp {
+            if let Some(ramfs) = discover_service(b"lookup:ramfs") {
+                let _ = vfs.mount(b"/tmp", ramfs);
+                mounted_tmp = true;
+            }
+        }
+        if mounted_root {
             return;
         }
         syscall::yield_cpu();
@@ -141,12 +154,35 @@ fn handle_req(vfs: &mut Vfs, sender: TaskId, msg: &[u8]) {
             }
             let _ = syscall::send_message(fs_task, MessageType::Request, &req[..n]);
             let mut resp = [0u8; 196];
-            if let Ok((_from, MessageType::Reply)) = syscall::receive_message(&mut resp) {
-                let rlen = resp.iter().position(|&b| b == 0).unwrap_or(resp.len());
-                let _ = syscall::reply_message(sender, &resp[..rlen]);
-            } else {
-                let _ = syscall::reply_message(sender, b"ERR");
+            for _ in 0..64 {
+                match syscall::receive_message(&mut resp) {
+                    Ok((from, MessageType::Reply)) => {
+                        if from != fs_task {
+                            continue;
+                        }
+                        let rlen = resp.iter().position(|&b| b == 0).unwrap_or(resp.len());
+                        if verb == b"list:" {
+                            let mut out = [0u8; 196];
+                            let mut k = 0usize;
+                            k += write_ascii(&mut out[k..], b".\n..\n");
+                            let copy = core::cmp::min(rlen, out.len().saturating_sub(k));
+                            out[k..k + copy].copy_from_slice(&resp[..copy]);
+                            k += copy;
+                            let _ = syscall::reply_message(sender, &out[..k]);
+                        } else {
+                            let _ = syscall::reply_message(sender, &resp[..rlen]);
+                        }
+                        return;
+                    }
+                    Ok((from, MessageType::Request)) => {
+                        // Avoid starving other clients while we wait for the FS reply.
+                        let _ = syscall::reply_message(from, b"BUSY");
+                    }
+                    Ok(_) => {}
+                    Err(_) => syscall::yield_cpu(),
+                }
             }
+            let _ = syscall::reply_message(sender, b"ERR");
             return;
         }
         let _ = syscall::reply_message(sender, b"NOTFOUND");
@@ -215,6 +251,12 @@ fn parse_u32_ascii(data: &[u8]) -> Option<u32> {
 
 fn strip_prefix<'a>(data: &'a [u8], p: &[u8]) -> Option<&'a [u8]> {
     if data.len() < p.len() || &data[..p.len()] != p { None } else { Some(&data[p.len()..]) }
+}
+
+fn write_ascii(out: &mut [u8], s: &[u8]) -> usize {
+    let n = core::cmp::min(out.len(), s.len());
+    out[..n].copy_from_slice(&s[..n]);
+    n
 }
 
 fn split_once<'a>(data: &'a [u8], delim: u8) -> Option<(&'a [u8], &'a [u8])> {

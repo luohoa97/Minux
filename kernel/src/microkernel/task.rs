@@ -28,6 +28,7 @@ pub struct Task {
     pub address_space: u32,  // Memory protection domain
     pub stack_ptr: u64,
     pub instruction_ptr: u64,
+    pub exit_code: u64,
     // Full CPU context
     pub rax: u64,
     pub rbx: u64,
@@ -60,6 +61,7 @@ impl Task {
             address_space,
             stack_ptr: 0,
             instruction_ptr: 0,
+            exit_code: 0,
             rax: 0,
             rbx: 0,
             rcx: 0,
@@ -87,6 +89,13 @@ impl Task {
     }
 }
 
+pub fn get_task_info(id: TaskId) -> Option<(TaskState, u64)> {
+    let tasks = TASKS.lock();
+    tasks.iter()
+        .find_map(|t| t.as_ref().filter(|task| task.id == id))
+        .map(|task| (task.state, task.exit_code))
+}
+
 use spin::Mutex;
 use core::arch::x86_64::__cpuid;
 
@@ -94,6 +103,8 @@ use core::arch::x86_64::__cpuid;
 pub(crate) static TASKS: Mutex<[Option<Task>; MAX_TASKS]> = Mutex::new([None; MAX_TASKS]);
 pub const MAX_CPUS: usize = 8;
 static CURRENT_TASKS: Mutex<[Option<TaskId>; MAX_CPUS]> = Mutex::new([None; MAX_CPUS]);
+// Last CPU index that ran each task. Used for cross-core wakeups.
+static TASK_LAST_CPU: Mutex<[usize; MAX_TASKS]> = Mutex::new([0; MAX_TASKS]);
 
 /// Initialize task management
 pub fn init() {
@@ -103,6 +114,7 @@ pub fn init() {
     TASKS.lock()[0] = Some(kernel_task); // Kernel address space
     let mut current = CURRENT_TASKS.lock();
     current[0] = Some(0);
+    TASK_LAST_CPU.lock()[0] = 0;
 }
 
 /// Create new task
@@ -128,6 +140,16 @@ pub fn current_task() -> Option<TaskId> {
 pub fn set_current_task(task_id: TaskId) {
     let idx = current_cpu_index();
     CURRENT_TASKS.lock()[idx] = Some(task_id);
+    if (task_id as usize) < MAX_TASKS {
+        TASK_LAST_CPU.lock()[task_id as usize] = idx;
+    }
+}
+
+pub fn task_last_cpu(task_id: TaskId) -> Option<usize> {
+    if (task_id as usize) >= MAX_TASKS {
+        return None;
+    }
+    Some(TASK_LAST_CPU.lock()[task_id as usize])
 }
 
 pub fn current_cpu_index() -> usize {
@@ -184,6 +206,19 @@ pub fn set_task_state(id: TaskId, state: TaskState) -> Result<(), ()> {
         if let Some(task) = task_opt {
             if task.id == id {
                 task.state = state;
+                return Ok(());
+            }
+        }
+    }
+    Err(())
+}
+
+pub fn set_task_exit_code(id: TaskId, code: u64) -> Result<(), ()> {
+    let mut tasks = TASKS.lock();
+    for task_opt in &mut *tasks {
+        if let Some(task) = task_opt {
+            if task.id == id {
+                task.exit_code = code;
                 return Ok(());
             }
         }

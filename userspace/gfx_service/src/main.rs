@@ -1,5 +1,5 @@
 //! Graphics service.
-//! App-facing API; forwards draw requests to vesa_driver.
+//! App-facing API; forwards draw requests to display driver.
 
 #![no_std]
 #![no_main]
@@ -20,15 +20,13 @@ pub extern "C" fn _start() -> ! {
     );
 
     loop {
-        let mut buf = [0u8; 128];
+        let mut buf = [0u8; 64];
         match syscall::receive_message(&mut buf) {
             Ok((sender, msg_type)) => {
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                let len = frame_len(&buf);
                 let data = &buf[..len];
                 match msg_type {
                     MessageType::Request => {
-                        // Render path is fire-and-forget: avoid driver reply traffic
-                        // feeding back into this service's IPC queue.
                         let _ = syscall::send_message(display_id, MessageType::Notification, data);
                         let _ = syscall::reply_message(sender, b"GFX:OK");
                     }
@@ -44,8 +42,32 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
+fn frame_len(buf: &[u8]) -> usize {
+    if buf.len() >= 16 && &buf[..4] == b"FBDR" {
+        let w = buf[8] as usize;
+        let h = buf[9] as usize;
+        let bpr = (w + 7) / 8;
+        return core::cmp::min(16 + bpr * h, buf.len());
+    }
+    if buf.len() >= 12 && &buf[..6] == b"fill:#" {
+        return 12;
+    }
+    if buf.len() >= 4 && &buf[..4] == b"FBCL" {
+        return 4;
+    }
+    buf.iter().position(|&b| b == 0).unwrap_or(buf.len())
+}
+
 fn discover_display_service() -> Option<TaskId> {
-    let _ = syscall::send_message(INIT_TASK_ID, MessageType::Request, b"lookup:display");
+    // Prefer framebuffer driver if present; fall back to VGA text display.
+    if let Some(id) = discover_service_class(b"lookup:display_vesa") {
+        return Some(id);
+    }
+    discover_service_class(b"lookup:display")
+}
+
+fn discover_service_class(query: &[u8]) -> Option<TaskId> {
+    let _ = syscall::send_message(INIT_TASK_ID, MessageType::Request, query);
     let mut reply = [0u8; 16];
     if let Ok((sender, MessageType::Reply)) = syscall::receive_message(&mut reply) {
         if sender != INIT_TASK_ID {

@@ -6,9 +6,11 @@ use x86_64::structures::idt::InterruptStackFrame;
 static TICKS: AtomicU64 = AtomicU64::new(0);
 const PREEMPT_QUANTUM_TICKS: u64 = 4;
 const KBD_QUEUE_SIZE: usize = 64;
+const TRACE_KBD_IRQ: bool = false;
 static KBD_QUEUE: [AtomicU8; KBD_QUEUE_SIZE] = [const { AtomicU8::new(0) }; KBD_QUEUE_SIZE];
 static KBD_HEAD: AtomicUsize = AtomicUsize::new(0);
 static KBD_TAIL: AtomicUsize = AtomicUsize::new(0);
+static KBD_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Program PIT channel 0 in rate generator mode.
 pub fn init_pit(hz: u32) {
@@ -47,6 +49,10 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     let scancode = unsafe { inb(0x60) };
     push_keyboard_scancode(scancode);
+    if TRACE_KBD_IRQ {
+        let n = KBD_IRQ_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::serial_debugln!("[DBG] kbd irq sc={:#x} n={}", scancode, n);
+    }
     unsafe {
         super::pic::PICS.lock()
             .notify_end_of_interrupt(super::pic::InterruptIndex::Keyboard.as_u8());

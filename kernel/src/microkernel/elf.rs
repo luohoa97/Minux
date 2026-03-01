@@ -42,6 +42,7 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
 const DT_NULL: i64 = 0;
+const DT_PLTGOT: i64 = 3;
 const DT_RELA: i64 = 7;
 const DT_RELASZ: i64 = 8;
 const DT_RELAENT: i64 = 9;
@@ -91,11 +92,41 @@ pub fn load_elf(elf_data: &[u8]) -> Result<(TaskId, u64), ElfError> {
     let ph_count = header.e_phnum as usize;
     crate::serial_debugln!("[DBG] elf: phoff=0x{:x} phnum={}", ph_offset, ph_count);
 
+    let mut image_lo = u64::MAX;
+    let mut image_hi = 0u64;
     for i in 0..ph_count {
         let ph_addr = ph_offset + i * ph_size;
         if ph_addr + ph_size > elf_data.len() {
             return Err(ElfError::InvalidFormat);
         }
+        let ph = unsafe {
+            core::ptr::read_unaligned(elf_data.as_ptr().add(ph_addr) as *const ProgramHeader)
+        };
+        if ph.p_type != PT_LOAD {
+            continue;
+        }
+        let lo = ph.p_vaddr & !0xfff;
+        let hi = (ph.p_vaddr + ph.p_memsz + 0xfff) & !0xfff;
+        if lo < image_lo {
+            image_lo = lo;
+        }
+        if hi > image_hi {
+            image_hi = hi;
+        }
+    }
+    if image_lo == u64::MAX || image_hi <= image_lo {
+        return Err(ElfError::InvalidFormat);
+    }
+
+    let load_bias = if header.e_type == ET_DYN {
+        const USER_DYN_BASE: u64 = 0x0000_2000_0000;
+        USER_DYN_BASE.wrapping_sub(image_lo)
+    } else {
+        0
+    };
+
+    for i in 0..ph_count {
+        let ph_addr = ph_offset + i * ph_size;
         let ph = unsafe {
             core::ptr::read_unaligned(elf_data.as_ptr().add(ph_addr) as *const ProgramHeader)
         };
@@ -112,18 +143,23 @@ pub fn load_elf(elf_data: &[u8]) -> Result<(TaskId, u64), ElfError> {
             ph.p_memsz
         );
 
-        load_segment_mapped(elf_data, &ph, address_space)?;
+        load_segment_mapped(elf_data, &ph, address_space, load_bias)?;
     }
-    // ET_EXEC runs at fixed vaddrs. ET_DYN requires runtime relocation support.
     if header.e_type == ET_DYN {
-        // Keep this explicit so failures are obvious during bring-up.
-        return Err(ElfError::UnsupportedArch);
+        apply_relocations(
+            elf_data,
+            ph_offset,
+            ph_size,
+            ph_count,
+            load_bias,
+            address_space,
+        )?;
     }
 
     let task_id =
         crate::microkernel::create_task(address_space).map_err(|_| ElfError::OutOfMemory)?;
 
-    let entry = header.e_entry;
+    let entry = header.e_entry.wrapping_add(load_bias);
     let stack_size = 0x10000usize;
     // Keep one extra mapped page above logical stack top as bring-up headroom
     // because user tasks currently run at CPL0 and IRQ stubs may touch rsp+offset.
@@ -153,7 +189,6 @@ fn map_user_stack(
     const STACK_FLAGS: u64 = 0x1 | 0x2 | 0x8; // R|W|USER, NX enforced by MM
     const STACK_SLOT_STRIDE: u64 = 0x20_0000; // 2 MiB per task slot
     const STACK_TOP_BASE: u64 = 0x0000_7000_0000_0000;
-
     let task_slot = (task_id as u64).saturating_add(1);
     let stack_top = STACK_TOP_BASE.saturating_sub(task_slot * STACK_SLOT_STRIDE);
     let stack_base = stack_top.saturating_sub(stack_size as u64);
@@ -178,10 +213,10 @@ fn apply_relocations(
     ph_offset: usize,
     ph_size: usize,
     ph_count: usize,
-    image_lo: u64,
-    image_base: u64,
+    load_bias: u64,
+    address_space: AddressSpaceId,
 ) -> Result<(), ElfError> {
-    let mut dyn_vaddr = 0u64;
+    let mut dyn_file_off = 0usize;
     let mut dyn_filesz = 0usize;
     for i in 0..ph_count {
         let ph_addr = ph_offset + i * ph_size;
@@ -192,25 +227,29 @@ fn apply_relocations(
             core::ptr::read_unaligned(elf_data.as_ptr().add(ph_addr) as *const ProgramHeader)
         };
         if ph.p_type == PT_DYNAMIC {
-            dyn_vaddr = ph.p_vaddr;
+            dyn_file_off = ph.p_offset as usize;
             dyn_filesz = ph.p_filesz as usize;
             break;
         }
     }
-    if dyn_vaddr == 0 || dyn_filesz == 0 {
+    if dyn_filesz == 0 {
         return Ok(());
     }
-
-    let dyn_ptr = (image_base + (dyn_vaddr - image_lo)) as *const DynEntry;
+    if dyn_file_off.checked_add(dyn_filesz).filter(|&n| n <= elf_data.len()).is_none() {
+        return Err(ElfError::InvalidFormat);
+    }
     let dyn_count = dyn_filesz / core::mem::size_of::<DynEntry>();
 
     let mut rela_vaddr = 0u64;
     let mut rela_size = 0usize;
     let mut rela_ent = core::mem::size_of::<RelaEntry>();
+    let mut pltgot_vaddr = 0u64;
     for i in 0..dyn_count {
-        let d = unsafe { core::ptr::read_unaligned(dyn_ptr.add(i)) };
+        let off = dyn_file_off + i * core::mem::size_of::<DynEntry>();
+        let d = unsafe { core::ptr::read_unaligned(elf_data.as_ptr().add(off) as *const DynEntry) };
         match d.d_tag {
             DT_NULL => break,
+            DT_PLTGOT => pltgot_vaddr = d.d_val,
             DT_RELA => rela_vaddr = d.d_val,
             DT_RELASZ => rela_size = d.d_val as usize,
             DT_RELAENT => rela_ent = d.d_val as usize,
@@ -220,20 +259,27 @@ fn apply_relocations(
     if rela_vaddr == 0 || rela_size == 0 || rela_ent == 0 {
         return Ok(());
     }
+    if pltgot_vaddr != 0 {
+        crate::serial_debugln!("[DBG] elf: DT_PLTGOT vaddr=0x{:x}", pltgot_vaddr.wrapping_add(load_bias));
+    }
 
-    let rela_ptr = (image_base + (rela_vaddr - image_lo)) as *const u8;
+    let rela_off = vaddr_to_file_offset(elf_data, ph_offset, ph_size, ph_count, rela_vaddr)?;
     let rela_count = rela_size / rela_ent;
-    let load_bias = image_base.wrapping_sub(image_lo);
     let mut applied = 0usize;
 
     for i in 0..rela_count {
-        let ent_ptr = unsafe { rela_ptr.add(i * rela_ent) } as *const RelaEntry;
-        let r = unsafe { core::ptr::read_unaligned(ent_ptr) };
+        let ent_off = rela_off + i * rela_ent;
+        if ent_off.checked_add(core::mem::size_of::<RelaEntry>()).filter(|&n| n <= elf_data.len()).is_none() {
+            return Err(ElfError::InvalidFormat);
+        }
+        let r = unsafe { core::ptr::read_unaligned(elf_data.as_ptr().add(ent_off) as *const RelaEntry) };
         let r_type = (r.r_info & 0xffff_ffff) as u32;
         if r_type != R_X86_64_RELATIVE {
             continue;
         }
-        let where_ptr = (image_base + (r.r_offset - image_lo)) as *mut u64;
+        let where_va = r.r_offset.wrapping_add(load_bias);
+        let where_pa = crate::mm::translate_address(address_space, where_va).ok_or(ElfError::OutOfMemory)?;
+        let where_ptr = where_pa as *mut u64;
         let value = (r.r_addend as i128 + load_bias as i128) as u64;
         unsafe { core::ptr::write(where_ptr, value) };
         applied += 1;
@@ -244,10 +290,38 @@ fn apply_relocations(
     Ok(())
 }
 
+fn vaddr_to_file_offset(
+    elf_data: &[u8],
+    ph_offset: usize,
+    ph_size: usize,
+    ph_count: usize,
+    vaddr: u64,
+) -> Result<usize, ElfError> {
+    for i in 0..ph_count {
+        let ph_addr = ph_offset + i * ph_size;
+        if ph_addr + ph_size > elf_data.len() {
+            return Err(ElfError::InvalidFormat);
+        }
+        let ph = unsafe {
+            core::ptr::read_unaligned(elf_data.as_ptr().add(ph_addr) as *const ProgramHeader)
+        };
+        if ph.p_type != PT_LOAD || ph.p_filesz == 0 {
+            continue;
+        }
+        let lo = ph.p_vaddr;
+        let hi = ph.p_vaddr.wrapping_add(ph.p_filesz);
+        if vaddr >= lo && vaddr < hi {
+            return Ok((ph.p_offset + (vaddr - lo)) as usize);
+        }
+    }
+    Err(ElfError::InvalidFormat)
+}
+
 fn load_segment_mapped(
     elf_data: &[u8],
     ph: &ProgramHeader,
     address_space: AddressSpaceId,
+    load_bias: u64,
 ) -> Result<(), ElfError> {
     if ph.p_filesz > ph.p_memsz {
         return Err(ElfError::InvalidFormat);
@@ -256,8 +330,8 @@ fn load_segment_mapped(
         return Ok(());
     }
 
-    let seg_start = ph.p_vaddr & !0xfff;
-    let seg_end = (ph.p_vaddr + ph.p_memsz + 0xfff) & !0xfff;
+    let seg_start = ph.p_vaddr.wrapping_add(load_bias) & !0xfff;
+    let seg_end = (ph.p_vaddr.wrapping_add(load_bias) + ph.p_memsz + 0xfff) & !0xfff;
     let page_count = ((seg_end - seg_start) / 0x1000) as usize;
 
     let mut flags = 0u64;
@@ -293,7 +367,7 @@ fn load_segment_mapped(
             return Err(ElfError::InvalidFormat);
         }
         for j in 0..file_size {
-            let va = ph.p_vaddr + j as u64;
+            let va = ph.p_vaddr.wrapping_add(load_bias) + j as u64;
             let pa = crate::mm::translate_address(address_space, va).ok_or(ElfError::OutOfMemory)?;
             unsafe {
                 core::ptr::write(pa as *mut u8, *elf_data.get_unchecked(file_offset + j));
@@ -303,7 +377,7 @@ fn load_segment_mapped(
 
     if ph.p_memsz > ph.p_filesz {
         for j in (ph.p_filesz as usize)..(ph.p_memsz as usize) {
-            let va = ph.p_vaddr + j as u64;
+            let va = ph.p_vaddr.wrapping_add(load_bias) + j as u64;
             let pa = crate::mm::translate_address(address_space, va).ok_or(ElfError::OutOfMemory)?;
             unsafe {
                 core::ptr::write(pa as *mut u8, 0);

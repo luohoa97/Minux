@@ -6,6 +6,7 @@
 //! - Memory operations (map, unmap)
 
 use crate::microkernel::TaskId;
+use crate::microkernel::BOOTFS_MAGIC;
 use crate::ipc::{Message, MessageType, IpcError};
 use crate::microkernel::MAX_TASKS;
 
@@ -78,6 +79,13 @@ pub enum Syscall {
     ExecModule = 13,
     /// Poll next keyboard scancode from IRQ queue
     ReadScancode = 14,
+    /// Query boot framebuffer info (phys/pitch/width/height/bpp)
+    GetFramebufferInfo = 15,
+    /// Query task state/exit code
+    GetTaskInfo = 16,
+    /// Bootfs list/read
+    BootfsList = 17,
+    BootfsRead = 18,
 }
 
 impl Syscall {
@@ -98,6 +106,10 @@ impl Syscall {
             12 => Some(Self::ReceiveFast),
             13 => Some(Self::ExecModule),
             14 => Some(Self::ReadScancode),
+            15 => Some(Self::GetFramebufferInfo),
+            16 => Some(Self::GetTaskInfo),
+            17 => Some(Self::BootfsList),
+            18 => Some(Self::BootfsRead),
             _ => None,
         }
     }
@@ -154,6 +166,10 @@ pub fn handle_syscall(syscall_num: u64, args: &[u64; 6]) -> SyscallResult {
         Syscall::ReceiveFast => handle_receive_fast(args),
         Syscall::ExecModule => handle_exec_module(args),
         Syscall::ReadScancode => handle_read_scancode(args),
+        Syscall::GetFramebufferInfo => handle_get_framebuffer_info(args),
+        Syscall::GetTaskInfo => handle_get_task_info(args),
+        Syscall::BootfsList => handle_bootfs_list(args),
+        Syscall::BootfsRead => handle_bootfs_read(args),
     }
 }
 
@@ -282,6 +298,7 @@ fn handle_exit(args: &[u64; 6]) -> SyscallResult {
     
     if let Some(task_id) = crate::microkernel::current_task() {
         // Mark task as terminated
+        let _ = crate::microkernel::set_task_exit_code(task_id, exit_code);
         let _ = crate::microkernel::set_task_state(task_id, crate::microkernel::TaskState::Terminated);
         
         // Clean up task resources
@@ -497,6 +514,146 @@ fn handle_read_scancode(_args: &[u64; 6]) -> SyscallResult {
     } else {
         Err(SyscallError::NoMessage)
     }
+}
+
+fn handle_get_framebuffer_info(args: &[u64; 6]) -> SyscallResult {
+    let fb = crate::arch::x86_64::boot_framebuffer().ok_or(SyscallError::NoMessage)?;
+    // out pointers: phys, pitch, width, height, bpp
+    let outs = [args[0], args[1], args[2], args[3], args[4]];
+    for &p in &outs {
+        if p != 0 && !is_valid_user_ptr(p, core::mem::size_of::<u64>()) {
+            return Err(SyscallError::InvalidArgument);
+        }
+    }
+    unsafe {
+        if args[0] != 0 {
+            core::ptr::write(args[0] as *mut u64, fb.phys_addr);
+        }
+        if args[1] != 0 {
+            core::ptr::write(args[1] as *mut u64, fb.pitch as u64);
+        }
+        if args[2] != 0 {
+            core::ptr::write(args[2] as *mut u64, fb.width as u64);
+        }
+        if args[3] != 0 {
+            core::ptr::write(args[3] as *mut u64, fb.height as u64);
+        }
+        if args[4] != 0 {
+            core::ptr::write(args[4] as *mut u64, fb.bpp as u64);
+        }
+    }
+    Ok(0)
+}
+
+fn handle_get_task_info(args: &[u64; 6]) -> SyscallResult {
+    let task_id = args[0] as TaskId;
+    let out_state = args[1];
+    let out_exit = args[2];
+
+    if out_state != 0 && !is_valid_user_ptr(out_state, core::mem::size_of::<u32>()) {
+        return Err(SyscallError::InvalidArgument);
+    }
+    if out_exit != 0 && !is_valid_user_ptr(out_exit, core::mem::size_of::<u64>()) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    if let Some((state, exit_code)) = crate::microkernel::get_task_info(task_id) {
+        unsafe {
+            if out_state != 0 {
+                core::ptr::write(out_state as *mut u32, state as u32);
+            }
+            if out_exit != 0 {
+                core::ptr::write(out_exit as *mut u64, exit_code);
+            }
+        }
+        Ok(0)
+    } else {
+        Err(SyscallError::NoSuchTask)
+    }
+}
+
+fn handle_bootfs_list(args: &[u64; 6]) -> SyscallResult {
+    let out_ptr = args[0];
+    let out_len = args[1] as usize;
+    if out_len == 0 {
+        return Ok(0);
+    }
+    if !is_valid_user_ptr(out_ptr, out_len) {
+        return Err(SyscallError::InvalidArgument);
+    }
+    let image = crate::microkernel::bootfs_image().ok_or(SyscallError::NoMessage)?;
+    let mut off = BOOTFS_MAGIC.len();
+    let mut written = 0usize;
+    unsafe {
+        let out = core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len);
+        while off + 6 <= image.len() {
+            let name_len = u16::from_le_bytes([image[off], image[off + 1]]) as usize;
+            off += 2;
+            let size = u32::from_le_bytes([image[off], image[off + 1], image[off + 2], image[off + 3]]) as usize;
+            off += 4;
+            if off + name_len > image.len() {
+                break;
+            }
+            let name = &image[off..off + name_len];
+            off += name_len;
+            if off + size > image.len() {
+                break;
+            }
+            off += size;
+            if written > 0 && written < out.len() {
+                out[written] = b'\n';
+                written += 1;
+            }
+            let copy = core::cmp::min(name.len(), out.len().saturating_sub(written));
+            out[written..written + copy].copy_from_slice(&name[..copy]);
+            written += copy;
+            if written >= out.len() {
+                break;
+            }
+        }
+    }
+    Ok(written as u64)
+}
+
+fn handle_bootfs_read(args: &[u64; 6]) -> SyscallResult {
+    let name_ptr = args[0];
+    let name_len = args[1] as usize;
+    let out_ptr = args[2];
+    let out_len = args[3] as usize;
+    if name_len == 0 || out_len == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    if !is_valid_user_ptr(name_ptr, name_len) || !is_valid_user_ptr(out_ptr, out_len) {
+        return Err(SyscallError::InvalidArgument);
+    }
+    let name = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len) };
+    let image = crate::microkernel::bootfs_image().ok_or(SyscallError::NoMessage)?;
+    let mut off = BOOTFS_MAGIC.len();
+    while off + 6 <= image.len() {
+        let nlen = u16::from_le_bytes([image[off], image[off + 1]]) as usize;
+        off += 2;
+        let size = u32::from_le_bytes([image[off], image[off + 1], image[off + 2], image[off + 3]]) as usize;
+        off += 4;
+        if off + nlen > image.len() {
+            break;
+        }
+        let entry_name = &image[off..off + nlen];
+        off += nlen;
+        if off + size > image.len() {
+            break;
+        }
+        let data = &image[off..off + size];
+        off += size;
+        if entry_name == name {
+            let copy = core::cmp::min(out_len, data.len());
+            unsafe {
+                let out = core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len);
+                out[..copy].copy_from_slice(&data[..copy]);
+            }
+            return Ok(copy as u64);
+        }
+    }
+    Err(SyscallError::NoMessage)
 }
 
 #[inline]
